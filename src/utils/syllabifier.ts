@@ -618,21 +618,35 @@ const hasImpositiveTaam = (syllables: Syllable[]): boolean => {
 const SEGOL = "\u{05B6}";
 const PATACH = "\u{05B7}";
 const GUTTURAL = /[\u{05D0}\u{05D7}\u{05E2}\u{05D4}]/u;
-// vowels that may open a segholate stem: chataf-segol/patach/qamats, tsere,
-// segol, patach, holam.
-const SEGOLATE_FIRST_VOWEL = /[\u{05B1}\u{05B2}\u{05B3}\u{05B5}\u{05B6}\u{05B7}\u{05B8}\u{05B9}]/u;
+// A furtive patach: a final guttural (ח/ע/ה־mappiq) carrying a patach written
+// AFTER it (e.g. חַ in נִיחֹחַ, רוּחַ). It is a post-tonic glide, never stressed.
+const FURTIVE_PATACH = /(?:\u{05D7}|\u{05E2}|\u{05D4}\u{05BC})\u{05B7}(?:\u{05C3})?$/u;
+// Short stem vowels of a segolate: chataf-segol/patach/qamats, tsere, segol,
+// patach, holam.
+const SEGOLATE_FIRST_VOWEL = /[\u{05B1}\u{05B2}\u{05B3}\u{05B5}\u{05B6}\u{05B7}\u{05B9}]/u;
+// Same, plus qamats — allowed ONLY when the last stem vowel is a segol, i.e. the
+// article-before-guttural compensatory lengthening (e.g. הָאָרֶץ). A qamats penult
+// with a guttural-patach ending is a regular verb (שָׁלַח, לָקַח), NOT a segolate.
+const SEGOLATE_FIRST_VOWEL_OR_QAMATS = /[\u{05B1}\u{05B2}\u{05B3}\u{05B5}\u{05B6}\u{05B7}\u{05B8}\u{05B9}]/u;
 
-
+// The segolate stem is the LAST two syllables; a prefix (article/waw/preposition,
+// e.g. הָאָרֶץ, הַמֶּלֶךְ, וַיֹּאמֶר) just adds syllables in front and does not
+// move the penultimate stress off the stem.
 const isSegholate = (syllables: Syllable[]): boolean => {
   if (syllables.length < 2) return false;
   const last = syllables[syllables.length - 1];
   const penult = syllables[syllables.length - 2];
-  if (!last.isClosed) return false;
+  if (!last.isClosed) return false; // excludes ־ֶה matres like שָׂדֶה (milra)
   const lastVowel = last.vowels[last.vowels.length - 1];
-  const lastOk = lastVowel === SEGOL || (lastVowel === PATACH && GUTTURAL.test(last.text));
-  if (!lastOk) return false;
   const penultVowel = penult.vowels[penult.vowels.length - 1];
-  return !!penultVowel && SEGOLATE_FIRST_VOWEL.test(penultVowel);
+  if (!penultVowel) return false;
+  if (lastVowel === SEGOL) {
+    return SEGOLATE_FIRST_VOWEL_OR_QAMATS.test(penultVowel);
+  }
+  if (lastVowel === PATACH && GUTTURAL.test(last.text)) {
+    return SEGOLATE_FIRST_VOWEL.test(penultVowel); // short vowel only → excludes שָׁלַח
+  }
+  return false;
 };
 
 // Pronominal suffixes on plural nouns that force stress onto the penult (mil'el).
@@ -642,8 +656,16 @@ const MILEL_SUFFIXES = [
   /\u{05B6}\u{05D9}\u{05D4}\u{05B8}$/u, // ־ֶיהָ  3fs
   /\u{05B7}\u{05D9}\u{05B4}\u{05D9}\u{05DA}\u{05B0}?$/u, // ־ַיִךְ 2fs
   /\u{05B5}\u{05D9}\u{05E0}\u{05D5}\u{05BC}$/u, // ־ֵינוּ 1cp
-  /\u{05B8}\u{05D9}\u{05D5}$/u // ־ָיו  3ms
+  /\u{05B8}\u{05D9}\u{05D5}$/u, // ־ָיו  3ms
+  /\u{05B7}\u{05D9}\u{05B4}\u{05DD}$/u // ־ַיִם dual (e.g. שָׁמַיִם, יָדַיִם)
 ];
+
+// Known exceptions: forms that match a mil'el heuristic above but are in fact
+// milra. Matched against the full pointed word. Prefixed forms need their own
+// entry (a prefix can change the vowels). Extend as needed.
+const MILRA_EXCEPTIONS = new Set([
+  "\u{05D0}\u{05B1}\u{05DE}\u{05B6}\u{05EA}" // אֱמֶת
+]);
 
 export const syllabify = (clusters: Cluster[], options: SylOpts, isWordInConstruct: boolean): Syllable[] => {
   const removeLatin = clusters.filter((cluster) => !cluster.isNotHebrew);
@@ -665,7 +687,7 @@ export const syllabify = (clusters: Cluster[], options: SylOpts, isWordInConstru
     syllables[syllables.length - 1].isAccented = true;
   }
 
-    // Morphological fallback for stress.
+  // Morphological fallback for stress.
   // The taamim above can only place stress when a taam actually sits on the
   // stressed consonant. With no taam at all, or with only a prepositive/
   // postpositive taam (e.g. dehi U+05AD), stress defaults to the last syllable,
@@ -674,13 +696,16 @@ export const syllabify = (clusters: Cluster[], options: SylOpts, isWordInConstru
   // suffix to move the stress to the penult where the suffix requires it.
   if (syllables.length > 1 && !hasImpositiveTaam(syllables)) {
     const wordText = syllables.map((s) => s.text).join("");
-    if (MILEL_SUFFIXES.some((re) => re.test(wordText)) || isSegholate(syllables)) {
+    if (
+      !MILRA_EXCEPTIONS.has(wordText) &&
+      (MILEL_SUFFIXES.some((re) => re.test(wordText)) || isSegholate(syllables))
+    ) {
       syllables.forEach((s) => (s.isAccented = false));
       syllables[syllables.length - 2].isAccented = true;
     }
   }
 
-   // A word has a single primary stress. If the taamim produced more than one
+  // A word has a single primary stress. If the taamim produced more than one
   // accented syllable (a pretonic ga'ya / meteg or a conjunctive helper sitting
   // alongside the main accent, e.g. וֶ֥אֱֽמוּנָתוֹ֮), keep only the primary one.
   // A ga'ya always precedes the tone syllable, so the primary accent is the
@@ -691,6 +716,18 @@ export const syllabify = (clusters: Cluster[], options: SylOpts, isWordInConstru
   );
   if (accentedIdx.length > 1) {
     accentedIdx.slice(0, -1).forEach((i) => (syllables[i].isAccented = false));
+  }
+
+  // A furtive patach is a post-tonic glide (e.g. נִיחֹחַ, רוּחַ, מָשִׁיחַ) and is
+  // never stressed. If the final syllable is a furtive patach and got accented,
+  // move the stress to the preceding (tone) syllable.
+  if (syllables.length > 1) {
+    const ult = syllables[syllables.length - 1];
+    const penult = syllables[syllables.length - 2];
+    if (ult.isAccented && !ult.isClosed && !penult.isClosed && FURTIVE_PATACH.test(ult.text)) {
+      ult.isAccented = false;
+      penult.isAccented = true;
+    }
   }
 
   // for each cluster, set its syllable

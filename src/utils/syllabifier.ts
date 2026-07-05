@@ -600,6 +600,51 @@ const reinsertLatin = (syls: Syllable[], latin: { cluster: Cluster; pos: number 
   return syls;
 };
 
+// Taamim whose graphical position does NOT mark the stressed syllable
+// (prepositive + postpositive). Everything else in the taamim range is
+// impositive and sits on the accented syllable.
+const NON_STRESS_TAAMIM =
+  /[\u{0592}\u{0598}\u{0599}\u{059D}\u{05A0}\u{05A9}\u{05AB}\u{05AD}\u{05AE}]/u;
+const ANY_TAAM = /[\u{0591}-\u{05AE}]/u;
+
+/** True if the word carries a taam that actually sits on the stressed syllable. */
+const hasImpositiveTaam = (syllables: Syllable[]): boolean => {
+  const text = syllables.map((s) => s.text).join("").replace(new RegExp(NON_STRESS_TAAMIM, "gu"), "");
+  return ANY_TAAM.test(text);
+};
+
+// Segholate detection: disyllabic nouns (qatl/qitl/qutl, incl. guttural variants)
+// are stressed on the penult (e.g. כֶּלֶב, מֶלֶךְ, סֵפֶר, בֹּקֶר, נַעַר).
+const SEGOL = "\u{05B6}";
+const PATACH = "\u{05B7}";
+const GUTTURAL = /[\u{05D0}\u{05D7}\u{05E2}\u{05D4}]/u;
+// vowels that may open a segholate stem: chataf-segol/patach/qamats, tsere,
+// segol, patach, holam.
+const SEGOLATE_FIRST_VOWEL = /[\u{05B1}\u{05B2}\u{05B3}\u{05B5}\u{05B6}\u{05B7}\u{05B8}\u{05B9}]/u;
+
+
+const isSegholate = (syllables: Syllable[]): boolean => {
+  if (syllables.length < 2) return false;
+  const last = syllables[syllables.length - 1];
+  const penult = syllables[syllables.length - 2];
+  if (!last.isClosed) return false;
+  const lastVowel = last.vowels[last.vowels.length - 1];
+  const lastOk = lastVowel === SEGOL || (lastVowel === PATACH && GUTTURAL.test(last.text));
+  if (!lastOk) return false;
+  const penultVowel = penult.vowels[penult.vowels.length - 1];
+  return !!penultVowel && SEGOLATE_FIRST_VOWEL.test(penultVowel);
+};
+
+// Pronominal suffixes on plural nouns that force stress onto the penult (mil'el).
+// Extend this list as needed; NOTE ־ֵיכֶם / ־ֵיהֶם stay milra, so are excluded.
+const MILEL_SUFFIXES = [
+  /\u{05B6}\u{05D9}\u{05DA}\u{05B8}$/u, // ־ֶיךָ  2ms  (e.g. עֲבָדֶיךָ)
+  /\u{05B6}\u{05D9}\u{05D4}\u{05B8}$/u, // ־ֶיהָ  3fs
+  /\u{05B7}\u{05D9}\u{05B4}\u{05D9}\u{05DA}\u{05B0}?$/u, // ־ַיִךְ 2fs
+  /\u{05B5}\u{05D9}\u{05E0}\u{05D5}\u{05BC}$/u, // ־ֵינוּ 1cp
+  /\u{05B8}\u{05D9}\u{05D5}$/u // ־ָיו  3ms
+];
+
 export const syllabify = (clusters: Cluster[], options: SylOpts, isWordInConstruct: boolean): Syllable[] => {
   const removeLatin = clusters.filter((cluster) => !cluster.isNotHebrew);
   const latinClusters = clusters.map(clusterPos).filter((c) => c.cluster.isNotHebrew);
@@ -618,6 +663,34 @@ export const syllabify = (clusters: Cluster[], options: SylOpts, isWordInConstru
   // unless that syllable is part of a word in construct
   if (!syllables.map((s) => s.isAccented).includes(true) && !isWordInConstruct) {
     syllables[syllables.length - 1].isAccented = true;
+  }
+
+    // Morphological fallback for stress.
+  // The taamim above can only place stress when a taam actually sits on the
+  // stressed consonant. With no taam at all, or with only a prepositive/
+  // postpositive taam (e.g. dehi U+05AD), stress defaults to the last syllable,
+  // which is wrong for many suffixed forms (e.g. עֲבָדֶיךָ, stressed on דֶי).
+  // When no impositive (stress-bearing) taam is present, use the pronominal
+  // suffix to move the stress to the penult where the suffix requires it.
+  if (syllables.length > 1 && !hasImpositiveTaam(syllables)) {
+    const wordText = syllables.map((s) => s.text).join("");
+    if (MILEL_SUFFIXES.some((re) => re.test(wordText)) || isSegholate(syllables)) {
+      syllables.forEach((s) => (s.isAccented = false));
+      syllables[syllables.length - 2].isAccented = true;
+    }
+  }
+
+   // A word has a single primary stress. If the taamim produced more than one
+  // accented syllable (a pretonic ga'ya / meteg or a conjunctive helper sitting
+  // alongside the main accent, e.g. וֶ֥אֱֽמוּנָתוֹ֮), keep only the primary one.
+  // A ga'ya always precedes the tone syllable, so the primary accent is the
+  // last (rightmost in reading order) marked syllable.
+  const accentedIdx = syllables.reduce(
+    (acc, syl, i) => (syl.isAccented ? [...acc, i] : acc),
+    [] as number[]
+  );
+  if (accentedIdx.length > 1) {
+    accentedIdx.slice(0, -1).forEach((i) => (syllables[i].isAccented = false));
   }
 
   // for each cluster, set its syllable
